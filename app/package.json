@@ -1,0 +1,24 @@
+{
+  "name": "hallraum",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "description": "A home for your podcast: transcribe, structure, publish",
+  "type": "module",
+  "main": "server.js",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test test/*.test.js",
+    "admin": "node scripts/create-admin.js",
+    "worker": "sh ../worker/start.sh"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0",
+    "busboy": "^1.6.0",
+    "express": "^5.3.0"
+  }
+}

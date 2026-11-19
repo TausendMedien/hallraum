@@ -1,0 +1,24 @@
+# Local: app + transcription worker.   Start: docker compose up --build
+services:
+  app:
+    build: ./app
+    ports: ["3000:3000"]
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  worker:
+    build: ./worker
+    env_file: .env
+    environment:
+      APP_URL: ${WORKER_APP_URL:-http://app:3000}
+    volumes:
+      - whisper-models:/models
+    restart: unless-stopped
+    depends_on: [app]
+
+volumes:
+  whisper-models:
