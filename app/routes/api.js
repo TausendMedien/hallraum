@@ -5,6 +5,7 @@ import { loadEpisode, httpError } from '../lib/episodes.js';
 import { sanitizeWords, reindexTranscript, diffCount } from '../lib/transcript.js';
 import { suggestChaptersAndTags, claudeAvailable } from '../lib/claude.js';
 import { normalizeSettings } from '../lib/autocut.js';
+import { fmtTime } from '../lib/html.js';
 import { autocutState } from '../lib/autocut-state.js';
 import { currentAudio, currentCut } from '../lib/episodes.js';
 
@@ -235,6 +236,32 @@ export default function apiRoutes(db) {
         db.run(`INSERT INTO autocut (episode_id, overrides, updated_at, updated_by) VALUES (?,?,datetime('now'),?)
                 ON CONFLICT (episode_id) DO UPDATE SET overrides = excluded.overrides, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
         ep.id, JSON.stringify(cur), req.user.id);
+      }
+      // Own cuts: { cut: {start, end} } adds one, { keep: {start, end} } removes own cuts and switches off
+      // proposals in that range (times of the first and last selected word)
+      const range = (x) => (x && Number.isFinite(Number(x.start)) && Number.isFinite(Number(x.end)) && Number(x.end) >= Number(x.start)
+        ? { start: Math.round(Number(x.start) * 1000) / 1000, end: Math.round(Number(x.end) * 1000) / 1000 } : null);
+      const cutRange = range(req.body.cut), keepRange = range(req.body.keep);
+      if (cutRange || keepRange) {
+        const row = db.get('SELECT overrides, own_cuts FROM autocut WHERE episode_id = ?', ep.id);
+        const overrides = row ? JSON.parse(row.overrides) : {};
+        let own = row ? JSON.parse(row.own_cuts) : [];
+        const overlaps = (a, b) => a.start < b.end + 0.001 && a.end > b.start - 0.001;
+        if (cutRange) {
+          own = own.filter((o) => !(o.start >= cutRange.start - 0.001 && o.end <= cutRange.end + 0.001));
+          own.push(cutRange);
+          logChange(db, { ...ctx(req, ep), type: 'autocut', id: ep.id, key: 'log.autocutOwnCut', params: { from: fmtTime(cutRange.start), to: fmtTime(cutRange.end) } });
+        }
+        if (keepRange) {
+          own = own.filter((o) => !overlaps(o, keepRange));
+          for (const c of autocutState(db, ep).cuts) {
+            if (c.type !== 'own' && c.start < keepRange.end && c.end > keepRange.start) overrides[c.id] = false;
+          }
+          logChange(db, { ...ctx(req, ep), type: 'autocut', id: ep.id, key: 'log.autocutKept', params: { from: fmtTime(keepRange.start), to: fmtTime(keepRange.end) } });
+        }
+        db.run(`INSERT INTO autocut (episode_id, overrides, own_cuts, updated_at, updated_by) VALUES (?,?,?,datetime('now'),?)
+                ON CONFLICT (episode_id) DO UPDATE SET overrides = excluded.overrides, own_cuts = excluded.own_cuts, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+        ep.id, JSON.stringify(overrides), JSON.stringify(own.sort((a, b) => a.start - b.start).slice(0, 5000)), req.user.id);
       }
       if (req.body.resetOverrides) {
         db.run('DELETE FROM autocut WHERE episode_id = ?', ep.id);

@@ -227,6 +227,20 @@ function quietness(gaps, start, end) {
   return covered >= (end - start) * 0.9 ? true : null;
 }
 
+// The team's own cut of any words: `start`/`end` are the times of the first and last selected word.
+// The range is widened into the silence around the words like a proposed cut, so the joint sounds natural.
+// Returns null if no word lies in the range (e.g. the transcript was edited since).
+export function ownCut(words, start, end) {
+  const idx = [];
+  words.forEach((w, k) => { if (w.s >= start - 0.001 && w.e <= end + 0.001) idx.push(k); });
+  if (!idx.length) return null;
+  const cut = wordCut(words, idx[0], idx.at(-1));
+  return {
+    id: `o:${round(start).toFixed(3)}`, type: 'own', start: cut.start, end: cut.end, from: idx[0], to: idx.at(-1),
+    word: { start: round(start), end: round(end) }, group: 'own', reasons: ['own'], on: true,
+  };
+}
+
 // The ranges to remove: proposals that are on, with manual changes applied ({ [id]: true|false })
 export function selectedRanges(cuts, overrides = {}) {
   return mergeRanges(cuts.filter((c) => (c.id in overrides ? Boolean(overrides[c.id]) : c.on)));

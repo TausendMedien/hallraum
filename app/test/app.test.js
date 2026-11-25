@@ -333,6 +333,21 @@ test('auto-cut: settings, measuring, decisions, cutting and the listening page',
   assert.equal(st.cut, null);
   assert.match(await page('', '/sample-show/1-media-in-everyday-life-with-mira'), new RegExp(`src="/media/audio/${raw.id}"`));
   assert.ok(db.get(`SELECT 1 FROM changes WHERE episode_id = ? AND summary LIKE '%log.autocutDone%'`, epId), 'logged');
+
+  // Own cuts of any words (selected text), and "don't cut" for a selection
+  const tw = JSON.parse(db.get('SELECT words FROM transcripts WHERE episode_id = ?', epId).words);
+  const last = tw.at(-1);
+  st = await (await json(benCookie, 'PUT', `/api/episodes/${epId}/autocut`, { cut: { start: last.s, end: last.e } })).json();
+  const own = st.cuts.find((c) => c.type === 'own');
+  assert.ok(own, 'own cut listed');
+  assert.equal(own.marked, true);
+  assert.equal(st.ownCount, 1);
+  assert.ok(st.ranges.some((r) => r.start <= last.s && r.end >= last.e), 'own cut is in the ranges to remove');
+  st = await (await json(benCookie, 'PUT', `/api/episodes/${epId}/autocut`, { keep: { start: last.s, end: last.e } })).json();
+  assert.equal(st.ownCount, 0, '"don\'t cut" removes the own cut again');
+  st = await (await json(benCookie, 'PUT', `/api/episodes/${epId}/autocut`, { keep: { start: um.start, end: um.end } })).json();
+  assert.equal(st.cuts.find((c) => c.id === um.id).marked, false, '"don\'t cut" switches off proposals in the selection');
+  assert.ok(db.get(`SELECT 1 FROM changes WHERE episode_id = ? AND summary LIKE '%log.autocutOwnCut%'`, epId), 'own cut logged');
 });
 
 test('every translation key exists in English and German', async () => {

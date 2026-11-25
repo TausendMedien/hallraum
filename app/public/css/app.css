@@ -106,7 +106,7 @@ table.tags td, table.tags th { border-bottom: 1px solid var(--line); padding: .4
 .draft label { margin: .3rem 0; }
 .draft label > input:not(.time), .draft textarea { display: block; width: 100%; }
 input.time { width: 6.5em; font-variant-numeric: tabular-nums; }
-.seltool { position: absolute; z-index: 20; display: flex; gap: .3rem; align-items: center; background: var(--fg); color: var(--bg); padding: .3rem; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+.seltool { position: absolute; z-index: 20; display: flex; flex-wrap: wrap; max-width: min(95vw, 52rem); gap: .3rem; align-items: center; background: var(--fg); color: var(--bg); padding: .3rem; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 [hidden] { display: none !important; }
 .seltool button { min-height: 32px; padding: .2rem .6rem; }
 .transcript.editmode span[data-i] { cursor: text; border-bottom: 1px dashed #c8c8d0; }
@@ -200,12 +200,17 @@ mark { background: #ffe58a; color: #000; }
 .ac-certain { --acc: #2e9b4f; }
 .ac-likely { --acc: #d9a400; }
 .ac-unsure { --acc: #d1453b; }
+.ac-own { --acc: #7b4fd6; }
+/* Certainty symbol after every proposed cut: shape and colour, so it is readable without colour too */
+.ac-certain { --sym: '●'; } .ac-likely { --sym: '◐'; } .ac-unsure { --sym: '○'; } .ac-own { --sym: '✂'; }
+.transcript span.ac::after, .acp::before { content: var(--sym); display: inline-block; color: var(--acc); font-size: .7em; vertical-align: super; margin-left: .1em; text-decoration: none; }
+.acp::before { margin: 0 .25em 0 0; vertical-align: baseline; }
 .transcript span.ac-on { text-decoration: line-through 2px var(--acc); background: color-mix(in srgb, var(--acc) 14%, transparent); }
 .transcript span.ac-manual, .acp.ac-manual { outline: 1px dashed var(--acc); }
 .transcript.cutmode span.ac { cursor: pointer; }
 .acp { font: inherit; font-size: .8em; min-height: 0; padding: 0 .35rem; margin: 0 .1rem; border: 1px solid var(--acc); background: transparent; color: inherit; cursor: pointer; vertical-align: baseline; }
 .acp.ac-on { background: color-mix(in srgb, var(--acc) 18%, transparent); }
-.acdot { display: inline-block; width: .7em; height: .7em; border-radius: 50%; background: var(--acc); }
+.acdot::before { content: var(--sym); color: var(--acc); }
 .autocut fieldset { margin: .5rem 0; }
 .autocut input.num { width: 4.5rem; }
 .actable { border-collapse: collapse; margin: .5rem 0; font-size: .9em; }

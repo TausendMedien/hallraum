@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   defaultSettings, normalizeSettings, resolveSettings, settingsFromLevel,
-  proposeCuts, selectedRanges, mergeRanges, makeTimeline,
+  proposeCuts, ownCut, selectedRanges, mergeRanges, makeTimeline,
 } from '../lib/autocut.js';
 
 // Builds words: each word lasts 0.3 s, with 0.1 s between words. "+1.5" inserts 1.5 s of extra pause.
@@ -207,4 +207,16 @@ test('migration: the old auto-cut level becomes the new settings', async () => {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('own cuts: any words, widened into the silence around them like a proposal', () => {
+  const ws = talk(['A', 'Das ist wirklich sehr gut']);
+  const c = ownCut(ws, ws[2].s, ws[3].e); // "wirklich sehr"
+  assert.equal(c.type, 'own');
+  assert.equal(c.marked, undefined);
+  assert.equal(c.on, true);
+  assert.deepEqual([c.from, c.to], [2, 3]);
+  assert.ok(c.start < ws[2].s && c.start > ws[1].e, 'starts in the gap before');
+  assert.ok(c.end > ws[3].e && c.end < ws[4].s, 'ends in the gap after');
+  assert.equal(ownCut(ws, 50, 51), null, 'no words in the range (transcript changed)');
 });

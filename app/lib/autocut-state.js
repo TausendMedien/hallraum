@@ -1,7 +1,7 @@
 // Auto-cut state of an episode, read from the database: settings, proposals, manual decisions,
 // the current cut version and whether it is outdated. The cut logic itself is in autocut.js.
 
-import { proposeCuts, selectedRanges, resolveSettings, normalizeSettings, makeTimeline, mergeRanges } from './autocut.js';
+import { proposeCuts, ownCut, selectedRanges, resolveSettings, normalizeSettings, makeTimeline, mergeRanges } from './autocut.js';
 import { currentAudio, currentCut, latestJob } from './episodes.js';
 
 const parse = (s, fallback) => { try { return s == null ? fallback : JSON.parse(s); } catch { return fallback; } };
@@ -18,10 +18,15 @@ export function autocutState(db, ep) {
   const podcast = db.get('SELECT autocut_settings, language FROM podcasts WHERE id = ?', ep.podcast_id);
   const settings = resolveSettings(podcast.autocut_settings, ep.autocut_settings);
   const tr = db.get('SELECT words, language, gaps, loudness, version FROM transcripts WHERE episode_id = ?', ep.id);
-  const overrides = parse(db.get('SELECT overrides FROM autocut WHERE episode_id = ?', ep.id)?.overrides, {});
+  const row = db.get('SELECT overrides, own_cuts FROM autocut WHERE episode_id = ?', ep.id);
+  const overrides = parse(row?.overrides, {});
   const words = tr ? parse(tr.words, []) : [];
   const gaps = tr ? parse(tr.gaps, null) : null;
   const cuts = tr ? proposeCuts(words, settings, tr.language || podcast.language, gaps) : [];
+  // The team's own cuts (any words, chosen by selecting text) – independent of the settings
+  const own = tr ? parse(row?.own_cuts, []).map((o) => ownCut(words, o.start, o.end)).filter(Boolean) : [];
+  cuts.push(...own);
+  cuts.sort((x, y) => x.start - y.start || x.end - y.end);
   for (const c of cuts) {
     c.manual = Object.hasOwn(overrides, c.id);
     c.marked = c.manual ? Boolean(overrides[c.id]) : c.on;
@@ -33,7 +38,8 @@ export function autocutState(db, ep) {
     settings,
     ownSettings: ep.autocut_settings != null,
     podcastSettings: normalizeSettings(podcast.autocut_settings),
-    active: isActive(settings),
+    active: isActive(settings) || own.length > 0,
+    ownCount: own.length,
     hasTranscript: Boolean(tr),
     transcriptVersion: tr?.version ?? null,
     measured: Array.isArray(gaps),
@@ -64,7 +70,8 @@ export function listenerAudio(db, episodeId) {
 // Checklist: is the cut version done and up to date? (null = auto-cut not active)
 export function autocutCheck(db, ep) {
   const podcast = db.get('SELECT autocut_settings FROM podcasts WHERE id = ?', ep.podcast_id);
-  if (!isActive(resolveSettings(podcast?.autocut_settings, ep.autocut_settings))) return null; // cheap check first
+  const own = db.get('SELECT own_cuts FROM autocut WHERE episode_id = ?', ep.id)?.own_cuts;
+  if (!isActive(resolveSettings(podcast?.autocut_settings, ep.autocut_settings)) && !parse(own, []).length) return null; // cheap check first
   const s = autocutState(db, ep);
   if (!s.active) return null;
   return { done: Boolean(s.cut) && !s.outdated, outdated: s.outdated, hasCut: Boolean(s.cut) };

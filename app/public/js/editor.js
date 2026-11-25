@@ -12,7 +12,7 @@ const t = (key, vars) => {
 };
 
 const fmt = (sec) => {
-  sec = Math.max(0, sec || 0);
+  sec = Math.round(Math.max(0, sec || 0) * 10) / 10; // round first, so 0.96 s becomes 0:01, not 0:00.10
   const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = Math.floor(sec % 60);
   const tenth = Math.round((sec % 1) * 10);
   const base = h ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}` : `${m}:${String(s).padStart(2, '0')}`;
@@ -115,8 +115,8 @@ function paragraphs() {
 }
 
 // ---------- Auto-cut marks ----------
-const GROUP_LABEL = { certain: 'acCertain', likely: 'acLikely', unsure: 'acUnsure' };
-const shown = (c) => acFilter === 'all' || acFilter === c.group;
+const GROUP_LABEL = { certain: 'acCertain', likely: 'acLikely', unsure: 'acUnsure', own: 'acOwn' };
+const shown = (c) => acFilter === 'all' || acFilter === c.group || c.group === 'own';
 
 // Which word belongs to which proposed cut, and after which word a pause marker goes (matched by time)
 function cutMarks() {
@@ -265,13 +265,22 @@ document.addEventListener('selectionchange', () => {
   if (!range) { toolbar.hidden = true; return; }
   const rect = sel.getRangeAt(0).getBoundingClientRect();
   const keep = (e) => e.preventDefault(); // keep the selection when clicking toolbar buttons
+  const allHes = range.idx.every((i) => words[i].f);
+  const speakers = Object.keys(speakerNames);
+  const sameSp = range.idx.every((i) => words[i].sp === words[range.idx[0]].sp) ? words[range.idx[0]].sp : '';
   toolbar.replaceChildren(
     h('span.small', {}, `${fmt(range.start)}–${fmt(range.end)}`),
+    h('button', { onmousedown: keep, onclick: () => ownCut('cut', range) }, '✂ ', t('cutSelection')),
+    h('button', { onmousedown: keep, onclick: () => ownCut('keep', range) }, '↺ ', t('keepSelection')),
+    h('button', { onmousedown: keep, onclick: () => setWords(range.idx, (w) => { w.f = allHes ? 0 : 1; }) }, allHes ? t('unmarkHesitation') : t('markHesitation')),
+    speakers.length > 1 ? h('span.small', {}, t('assignSpeaker')) : null,
+    ...(speakers.length > 1 ? speakers.map((sp) => h('button', { onmousedown: keep, 'aria-pressed': sp === sameSp ? 'true' : 'false', disabled: sp === sameSp,
+      onclick: () => setWords(range.idx, (w) => { w.sp = sp; }) }, speakerNames[sp] || sp)) : []),
     h('button', { onmousedown: keep, onclick: () => newSection(range) }, '+ ', t('addSection')),
     h('button', { onmousedown: keep, onclick: () => newChapter(range.start) }, '+ ', t('addChapterHere')),
     h('button', { onmousedown: keep, onclick: () => { audio.currentTime = range.start; audio.play(); } }, '▶ ', t('preview')));
   toolbar.hidden = false;
-  toolbar.style.top = `${scrollY + rect.top - 44}px`;
+  toolbar.style.top = `${scrollY + rect.top - toolbar.offsetHeight - 6}px`;
   toolbar.style.left = `${Math.max(8, rect.left)}px`;
 });
 
@@ -280,8 +289,39 @@ function selectedRange() {
   const r = sel.getRangeAt(0);
   const spans = [...transcriptEl.querySelectorAll('span[data-i]')].filter((s) => r.intersectsNode(s));
   if (!spans.length) return null;
-  const a = words[Number(spans[0].dataset.i)], b = words[Number(spans.at(-1).dataset.i)];
-  return { start: a.s, end: b.e, text: spans.map((s) => s.textContent).join(' ') };
+  const idx = spans.map((s) => Number(s.dataset.i));
+  const a = words[idx[0]], b = words[idx.at(-1)];
+  return { start: a.s, end: b.e, idx, text: spans.map((s) => s.textContent).join(' ') };
+}
+
+// Right-click on a word: select it, so the toolbar appears (instead of the browser's menu)
+transcriptEl.addEventListener('contextmenu', (e) => {
+  const span = e.target.closest('span[data-i]');
+  if (!span || editMode) return;
+  const sel = getSelection();
+  if (sel && !sel.isCollapsed && sel.getRangeAt(0).intersectsNode(span)) { e.preventDefault(); return; }
+  e.preventDefault();
+  const r = document.createRange();
+  r.selectNodeContents(span);
+  sel.removeAllRanges(); sel.addRange(r);
+});
+
+function clearSelection() { toolbar.hidden = true; getSelection().removeAllRanges(); }
+
+// Own cut of any selected words, or "don't cut" for everything in the selection
+async function ownCut(kind, range) {
+  clearSelection();
+  if (dirty) await save(); // the cut refers to the saved words
+  acAct(() => api('PUT', `/api/episodes/${epId}/autocut`, { [kind]: { start: range.start, end: range.end } }));
+}
+
+// Change selected words (hesitation flag, speaker) and save right away, so auto-cut sees it
+function setWords(idx, fn) {
+  clearSelection();
+  idx.forEach((i) => fn(words[i]));
+  setDirty(true);
+  renderTranscript();
+  save();
 }
 
 async function save() {
@@ -441,6 +481,7 @@ function autocutBox() {
   const summary = AC.active ? h('table.actable', {},
     h('tr', {}, h('th', {}, ''), ...['certain', 'likely', 'unsure'].map((g) => h('th', {}, h('span', { class: `acdot ac-${g}` }), ' ', t(GROUP_LABEL[g])))),
     ...TYPES.map((type) => h('tr', {}, h('td', {}, t('acType.' + type)), ...['certain', 'likely', 'unsure'].map((g) => h('td', {}, count(type, g) || '–'))))) : null;
+  const ownLine = AC.ownCount ? h('p.small', {}, h('span', { class: 'acdot ac-own' }), ' ', t('acOwnCount', { n: AC.ownCount })) : null;
   const marked = AC.cuts.filter((c) => c.marked).length;
 
   const filter = h('div.inline.small', { role: 'radiogroup', 'aria-label': t('acShow') }, t('acShow'), ' ',
@@ -471,7 +512,9 @@ function autocutBox() {
     h('div.inline', {}, h('label', {}, t('ac.hesitations'), ' ', thresholdSel('hesitations'))),
     h('div.inline', {}, h('label', {}, t('ac.fillers'), ' ', thresholdSel('fillers'))),
     summary,
+    ownLine,
     AC.active ? filter : null,
+    AC.active ? h('p.small.muted', {}, t('acLegend')) : null,
     AC.active ? h('p.small.muted', {}, t('acHelp')) : null,
     AC.active ? h('div.inline', {},
       h('button.primary', { disabled: !AC.ranges.length, onclick: () => acAct(() => api('POST', `/api/episodes/${epId}/autocut/render`)) },

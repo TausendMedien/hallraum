@@ -25,6 +25,7 @@ function migrate(db) {
     ['audio_files', 'source_id', 'INTEGER REFERENCES audio_files(id) ON DELETE CASCADE'], ['audio_files', 'cut_info', 'TEXT']]) {
     if (!cols(table).includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
   }
+  if (!cols('autocut').includes('own_cuts')) db.exec("ALTER TABLE autocut ADD COLUMN own_cuts TEXT NOT NULL DEFAULT '[]'");
   // Auto-cut: the single level (off / soft / medium / strong) became three separate settings stored as JSON
   for (const [table, oldCol] of [['podcasts', 'autocut_default'], ['episodes', 'autocut_level']]) {
     if (!cols(table).includes('autocut_settings')) {

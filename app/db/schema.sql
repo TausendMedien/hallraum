@@ -185,7 +185,7 @@ CREATE TABLE IF NOT EXISTS changes (
 );
 CREATE INDEX IF NOT EXISTS changes_episode ON changes(episode_id, at);
 
--- Jobs for the transcription worker. type: transcribe | analyze, autocut (planned, see docs/auto-cut-plan.md)
+-- Jobs for the transcription worker. type: transcribe | analyze | autocut (see docs/auto-cut-plan.md)
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY,
   episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,
@@ -202,9 +202,11 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 
 -- Auto-cut: manual decisions per proposal ({"h:12.345": true, "p:40.100": false})
+-- and the team's own cuts of any words ([{"start": 12.3, "end": 14.0}], word times of the original)
 CREATE TABLE IF NOT EXISTS autocut (
   episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
   overrides TEXT NOT NULL DEFAULT '{}',
+  own_cuts TEXT NOT NULL DEFAULT '[]',
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_by INTEGER REFERENCES users(id)
 );
