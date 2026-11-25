@@ -21,6 +21,10 @@ export function openDb(file = process.env.DB_FILE || path.join(DATA_DIR, 'app.sq
 function migrate(db) {
   const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
   if (!cols('users').includes('locale')) db.exec('ALTER TABLE users ADD COLUMN locale TEXT');
+  for (const [table, col, type] of [['transcripts', 'gaps', 'TEXT'], ['transcripts', 'loudness', 'TEXT'],
+    ['audio_files', 'source_id', 'INTEGER REFERENCES audio_files(id) ON DELETE CASCADE'], ['audio_files', 'cut_info', 'TEXT']]) {
+    if (!cols(table).includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${type}`);
+  }
   // Auto-cut: the single level (off / soft / medium / strong) became three separate settings stored as JSON
   for (const [table, oldCol] of [['podcasts', 'autocut_default'], ['episodes', 'autocut_level']]) {
     if (!cols(table).includes('autocut_settings')) {

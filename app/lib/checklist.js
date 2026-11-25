@@ -1,3 +1,5 @@
+import { autocutCheck } from './autocut-state.js';
+
 // Per-episode checklist. auto: computed from the data; manual: ticked by hand.
 // Labels are translation keys: `check.<key>`.
 export const STEPS = [
@@ -5,6 +7,7 @@ export const STEPS = [
   { key: 'sound', auto: false },
   { key: 'transcript', auto: true },
   { key: 'transcript_review', auto: false },
+  { key: 'autocut', auto: true, onlyIf: 'autocut' }, // only while auto-cut is switched on
   { key: 'chapters_tags', auto: false },
   { key: 'teasers', auto: true, stage: 2 },
   { key: 'moderation', auto: true, stage: 2 },
@@ -21,9 +24,11 @@ export function computeChecklist(db, episode) {
     db.all(`SELECT c.step, c.done, c.done_at, u.name AS done_by FROM checklist c LEFT JOIN users u ON u.id = c.done_by
             WHERE c.episode_id = ?`, episode.id).map((r) => [r.step, r]));
   const has = (sql, ...p) => !!db.get(sql, ...p);
+  const ac = autocutCheck(db, episode);
   const cover = episode.cover_path || db.get('SELECT cover_path FROM podcasts WHERE id = ?', episode.podcast_id)?.cover_path;
   const auto = {
-    audio: has(`SELECT 1 FROM audio_files WHERE episode_id = ? AND kind = 'main' AND is_current = 1`, episode.id),
+    audio: has(`SELECT 1 FROM audio_files WHERE episode_id = ? AND kind = 'main' AND variant = 'raw' AND is_current = 1`, episode.id),
+    autocut: Boolean(ac?.done),
     transcript: has('SELECT 1 FROM transcripts WHERE episode_id = ?', episode.id),
     teasers: false, // stage 2
     moderation: has(`SELECT 1 FROM audio_files WHERE episode_id = ? AND kind = 'moderation' AND is_current = 1`, episode.id),
@@ -33,7 +38,7 @@ export function computeChecklist(db, episode) {
   };
   const items = [];
   for (const step of STEPS) {
-    if (step.onlyIf && !episode[step.onlyIf]) continue;
+    if (step.onlyIf === 'autocut' ? !ac : step.onlyIf && !episode[step.onlyIf]) continue;
     const m = manual[step.key];
     items.push({
       ...step,
@@ -41,6 +46,7 @@ export function computeChecklist(db, episode) {
       done: step.auto ? auto[step.key] : !!m?.done,
       doneBy: m?.done_by, doneAt: m?.done_at,
       detail: step.key === 'teasers' ? { key: 'check.teasersCount', params: { n: 0, of: 4 } }
+        : step.key === 'autocut' && ac?.outdated ? { key: 'check.autocutOutdated' }
         : step.key === 'consent' && episode.consent_date ? { key: 'check.onDate', params: { date: episode.consent_date } } : null,
     });
   }

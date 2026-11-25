@@ -194,3 +194,21 @@ mark { background: #ffe58a; color: #000; }
   .epcols aside, .editor-cols .side { position: static; max-height: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+
+/* ---------- Auto-cut marks in the transcript editor ---------- */
+.transcript span.ac, .acp { border-radius: 3px; padding: 0 .1rem; box-shadow: inset 0 -3px 0 var(--acc); }
+.ac-certain { --acc: #2e9b4f; }
+.ac-likely { --acc: #d9a400; }
+.ac-unsure { --acc: #d1453b; }
+.transcript span.ac-on { text-decoration: line-through 2px var(--acc); background: color-mix(in srgb, var(--acc) 14%, transparent); }
+.transcript span.ac-manual, .acp.ac-manual { outline: 1px dashed var(--acc); }
+.transcript.cutmode span.ac { cursor: pointer; }
+.acp { font: inherit; font-size: .8em; min-height: 0; padding: 0 .35rem; margin: 0 .1rem; border: 1px solid var(--acc); background: transparent; color: inherit; cursor: pointer; vertical-align: baseline; }
+.acp.ac-on { background: color-mix(in srgb, var(--acc) 18%, transparent); }
+.acdot { display: inline-block; width: .7em; height: .7em; border-radius: 50%; background: var(--acc); }
+.autocut fieldset { margin: .5rem 0; }
+.autocut input.num { width: 4.5rem; }
+.actable { border-collapse: collapse; margin: .5rem 0; font-size: .9em; }
+.actable th, .actable td { padding: .15rem .5rem; text-align: right; }
+.actable th:first-child, .actable td:first-child { text-align: left; }
+.autocut .warn { color: #9a5b00; font-weight: 600; }

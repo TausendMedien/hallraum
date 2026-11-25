@@ -17,7 +17,7 @@ Hallraum is developed in English. **German** is the first additional language, a
 
 - **Interface:** English and German, chosen per person (or from the browser language). Public pages use the podcast's language.
 - **Transcription:** the spoken language is detected automatically; the transcription worker uses language-specific prompts so that hesitations are written down verbatim.
-- **Filler words** are detected per language. German has its own list (*äh, ähm, öh, hm …*), and words that are fillers in one language but real words in another are handled correctly – e.g. English *um* is a filler, German *um* (as in *um … zu*) is not. A second list of "soft" fillers (*also, halt, sozusagen …* / *like, basically …*) is prepared for the planned auto-cut module.
+- **Filler words** are detected per language. German has its own list (*äh, ähm, öh, hm …*), and words that are fillers in one language but real words in another are handled correctly – e.g. English *um* is a filler, German *um* (as in *um … zu*) is not. A second list of "soft" fillers (*also, halt, sozusagen …* / *like, basically …*) is used by auto-cut.
 - **Claude suggestions** (optional) come back in the podcast's language.
 
 Adding a language: a dictionary in `app/locales/`, filler lists in `app/lib/languages.js` and a Whisper prompt in `worker/worker.py`.
@@ -33,6 +33,7 @@ Adding a language: a dictionary in `app/locales/`, filler lists in `app/lib/lang
 - Shared tag list per podcast: rename and merge
 - Checklist per episode (automatically detected and manual steps), overview with progress and next step
 - Change log ("last changed by …") and a notice when two people edit at the same time
+- **Auto-cut:** shorten long pauses, remove hesitation sounds (*äh, um*) and filler words (*also, like*). Each proposal is marked in the transcript as certain, likely or unsure; the team switches marks on or off, previews the result and cuts everything marked with one click. The worker renders a new version with short crossfades; the original stays untouched and downloadable. Listeners hear the cut version, and chapters, transcript, search and links follow it automatically. See [docs/auto-cut-plan.md](docs/auto-cut-plan.md).
 
 **Listening page** (per podcast at `/<short-name>`)
 - Player with speed control, ±15 seconds, remembered position and keyboard control
@@ -42,7 +43,7 @@ Adding a language: a dictionary in `app/locales/`, filler lists in `app/lib/lang
 - Links to a position (`?t=seconds`), content warnings before playback
 - Design per podcast (colours, pattern, cover), accessible (keyboard, contrast, transcript as real text)
 
-**Planned:** teasers and intro mixing, RSS feed with chapters and transcript (Podcasting 2.0), scheduled publishing, guest preview, glossary, embeddable player, social media clips, "auto-cut" module (remove filler words and pauses with adjustable strength).
+**Planned:** teasers and intro mixing, RSS feed with chapters and transcript (Podcasting 2.0), scheduled publishing, guest preview, glossary, embeddable player, social media clips.
 
 ## Architecture
 
@@ -83,6 +84,7 @@ Alternatively with Docker: `docker compose up --build` starts the app and the wo
 
 - Against a server on the internet: set `WORKER_APP_URL=https://podcast.example.org` in `.env`, then `npm run worker`
 - Model: `WHISPER_MODEL=large-v3-turbo` (default, about real time on a recent Mac) or `large-v3` (more accurate, much slower)
+- Besides transcribing, the worker measures how loud the pauses are and renders auto-cut versions. It needs `ffmpeg`.
 - Speaker detection: create a Hugging Face account, accept the conditions of `pyannote/speaker-diarization-community-1`, put the token into `HF_TOKEN`. Without a token everything is assigned to one person.
 
 ## Claude suggestions (optional)
@@ -106,7 +108,10 @@ Updates: `git pull`, `npm ci --omit=dev`, restart the application. Backup: copy 
 
 ```bash
 cd app && npm test
+cd worker && python -m unittest test_audio_tools.py   # needs numpy and ffmpeg, not WhisperX
 ```
+
+Auto-cut report for tuning with real episodes: `cd app && npm run autocut-report` (see [docs/auto-cut-tuning.md](docs/auto-cut-tuning.md)).
 
 ## Licence
 

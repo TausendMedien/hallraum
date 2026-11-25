@@ -19,6 +19,19 @@ export default function mediaRoutes(db) {
     sendRange(req, res, p.file, p.mime, isPublic ? 'public, max-age=3600' : 'private, no-store');
   });
 
+  // Downloads for the team: the original file (f=original) or the MP3 (f=mp3)
+  r.get('/download/:id', (req, res) => {
+    const a = db.get('SELECT * FROM audio_files WHERE id = ?', Number.parseInt(req.params.id, 10));
+    if (!a || !member(req, a.podcast_id)) return res.status(404).end();
+    const mp3 = req.query.f === 'mp3';
+    if (mp3 && !a.mp3_path) return res.status(404).end();
+    const file = path.join(DATA_DIR, mp3 ? a.mp3_path : a.original_path);
+    const base = a.original_name.replace(/\.[^.]+$/, '');
+    const name = mp3 ? `${base}.mp3` : a.variant === 'cut' ? `${base}${path.extname(a.original_path)}` : a.original_name;
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.download(file, name);
+  });
+
   const IMG = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp' };
   r.get('/cover/:type/:id', (req, res) => {
     const id = Number(req.params.id);

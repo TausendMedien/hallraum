@@ -90,6 +90,18 @@ Implemented in `app/lib/autocut.js`, tested in `app/test/autocut.test.js`.
 - New database fields and migration.
 - Unit tests in English and German, including that German "um" is never cut and "ja" as an answer is not proposed as *certain*.
 
+### Status of phases 2–6 – done, with tuning still to do on real episodes
+
+| Phase | Where | Tested how |
+|---|---|---|
+| 2 Measuring pauses | `worker/audio_tools.py` (`measure_gaps`), job type `analyze`, `transcripts.gaps` | Python tests with synthetic audio (silence vs. music); run once against the app with a test recording |
+| 3 Editor | auto-cut panel and marks in `app/public/js/editor.js`, API in `app/routes/api.js` | end-to-end test in `app/test/app.test.js`; checked in the browser |
+| 4 Cutting | `worker/audio_tools.py` (`snap_ranges`, `render`), job type `autocut` | Python tests (exact length, no clicks, snapping); real cut of a test recording by the worker |
+| 5 Publishing | `listenerAudio()` in `app/lib/autocut-state.js`, `app/routes/public.js`, downloads in `app/routes/media.js`, checklist | end-to-end test (times on the listening page, search, downloads, outdated cut) |
+| 6 Tuning | `app/scripts/autocut-report.js` (`npm run autocut-report`) and [auto-cut-tuning.md](auto-cut-tuning.md) | tool is ready; **the actual tuning needs real episodes and listening** |
+
+Not covered yet: the pause measurement inside a real WhisperX transcription run (WhisperX isn't installed in the development environment), and listening tests of cut episodes.
+
 ### Phase 2: audio analysis for pauses
 - During transcription, the worker also measures the loudness of every gap between words and sends it back with the transcript.
 - For existing transcripts, a new job type `analyze` does only this measurement.
@@ -116,6 +128,7 @@ Implemented in `app/lib/autocut.js`, tested in `app/test/autocut.test.js`.
 ### Phase 6: real-world tuning
 - Test with real episodes in German and English; tune the group rules, thresholds and margins.
 - Measure how often Whisper misses hesitation sounds, since what isn't in the transcript can't be cut.
+- How to do it: [auto-cut-tuning.md](auto-cut-tuning.md).
 
 ## Risks
 

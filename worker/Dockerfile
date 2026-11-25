@@ -11,5 +11,5 @@ RUN pip install --no-cache-dir torch~=2.8.0 torchaudio~=2.8.0 torchvision~=0.23.
 
 ENV HF_HOME=/models PYTHONUNBUFFERED=1
 VOLUME /models
-COPY worker.py .
+COPY worker.py audio_tools.py ./
 CMD ["python", "worker.py"]

@@ -4,6 +4,9 @@ import { logChange, logFieldChanges } from '../lib/audit.js';
 import { loadEpisode, httpError } from '../lib/episodes.js';
 import { sanitizeWords, reindexTranscript, diffCount } from '../lib/transcript.js';
 import { suggestChaptersAndTags, claudeAvailable } from '../lib/claude.js';
+import { normalizeSettings } from '../lib/autocut.js';
+import { autocutState } from '../lib/autocut-state.js';
+import { currentAudio, currentCut } from '../lib/episodes.js';
 
 // JSON API for the transcript editor (login required)
 export default function apiRoutes(db) {
@@ -198,6 +201,87 @@ export default function apiRoutes(db) {
     db.run('DELETE FROM sections WHERE id = ?', s.id);
     logChange(db, { ...ctx(req, ep), type: 'section', id: s.id, key: s.accepted ? 'log.sectionDeleted' : 'log.sectionRejected', params: { title: s.title || '–' } });
     res.json(state(ep));
+  });
+
+  // ----- Auto-cut -----
+  const freshEpisode = (id) => db.get('SELECT * FROM episodes WHERE id = ?', id);
+
+  r.get('/episodes/:id/autocut', (req, res) => {
+    const ep = loadEpisode(db, req, req.params.id);
+    res.json(autocutState(db, ep));
+  });
+
+  // Settings ({...} = own settings for this episode, null = use the podcast's) and/or
+  // manual decisions ({ overrides: { id: true|false|null } }, null removes a decision)
+  r.put('/episodes/:id/autocut', (req, res) => {
+    const ep = loadEpisode(db, req, req.params.id);
+    db.tx(() => {
+      if ('settings' in req.body) {
+        const before = ep.autocut_settings;
+        const after = req.body.settings == null ? null : JSON.stringify(normalizeSettings(req.body.settings));
+        if (before !== after) {
+          db.run('UPDATE episodes SET autocut_settings = ? WHERE id = ?', after, ep.id);
+          logChange(db, { ...ctx(req, ep), type: 'episode', id: ep.id, field: 'autocut_settings', oldValue: before, newValue: after,
+            key: after == null ? 'log.autocutPodcastSettings' : 'log.autocutSettings' });
+        }
+      }
+      if (req.body.overrides && typeof req.body.overrides === 'object') {
+        const row = db.get('SELECT overrides FROM autocut WHERE episode_id = ?', ep.id);
+        const cur = row ? JSON.parse(row.overrides) : {};
+        for (const [id, v] of Object.entries(req.body.overrides).slice(0, 5000)) {
+          const key = String(id).slice(0, 40);
+          if (v == null) delete cur[key]; else cur[key] = Boolean(v);
+        }
+        db.run(`INSERT INTO autocut (episode_id, overrides, updated_at, updated_by) VALUES (?,?,datetime('now'),?)
+                ON CONFLICT (episode_id) DO UPDATE SET overrides = excluded.overrides, updated_at = excluded.updated_at, updated_by = excluded.updated_by`,
+        ep.id, JSON.stringify(cur), req.user.id);
+      }
+      if (req.body.resetOverrides) {
+        db.run('DELETE FROM autocut WHERE episode_id = ?', ep.id);
+        logChange(db, { ...ctx(req, ep), type: 'autocut', id: ep.id, key: 'log.autocutReset' });
+      }
+    });
+    res.json(autocutState(db, freshEpisode(ep.id)));
+  });
+
+  // Measure the loudness of the pauses (for transcripts made before auto-cut existed)
+  r.post('/episodes/:id/autocut/analyze', (req, res) => {
+    const ep = loadEpisode(db, req, req.params.id);
+    const raw = currentAudio(db, ep.id, 'main');
+    if (!raw) throw httpError(400, 'err.noMainAudio');
+    if (!db.get('SELECT 1 FROM transcripts WHERE episode_id = ?', ep.id)) throw httpError(400, 'err.noTranscript');
+    db.tx(() => {
+      db.run(`UPDATE jobs SET status = 'error', error = 'replaced' WHERE episode_id = ? AND type = 'analyze' AND status = 'queued'`, ep.id);
+      db.run(`INSERT INTO jobs (episode_id, audio_file_id, type, options) VALUES (?,?, 'analyze', '{}')`, ep.id, raw.id);
+    });
+    res.json(autocutState(db, ep));
+  });
+
+  // "Cut everything marked": the worker renders a new audio file from the original
+  r.post('/episodes/:id/autocut/render', (req, res) => {
+    const ep = loadEpisode(db, req, req.params.id);
+    const raw = currentAudio(db, ep.id, 'main');
+    if (!raw) throw httpError(400, 'err.noMainAudio');
+    const st = autocutState(db, ep);
+    if (!st.ranges.length) throw httpError(400, 'err.nothingMarked');
+    db.tx(() => {
+      db.run(`UPDATE jobs SET status = 'error', error = 'replaced by a newer request' WHERE episode_id = ? AND type = 'autocut' AND status IN ('queued','running')`, ep.id);
+      db.run(`INSERT INTO jobs (episode_id, audio_file_id, type, options) VALUES (?,?, 'autocut', ?)`, ep.id, raw.id,
+        JSON.stringify({ ranges: st.ranges, transcriptVersion: st.transcriptVersion, settings: st.settings, userId: req.user.id }));
+      logChange(db, { ...ctx(req, ep), type: 'autocut', id: ep.id, key: 'log.autocutRequested', params: { n: st.ranges.length, seconds: Math.round(st.removed) } });
+    });
+    res.json(autocutState(db, ep));
+  });
+
+  // Stop using the cut version (the original is played again; the file stays on disk)
+  r.delete('/episodes/:id/autocut/cut', (req, res) => {
+    const ep = loadEpisode(db, req, req.params.id);
+    const cut = currentCut(db, ep.id);
+    if (cut) {
+      db.run('UPDATE audio_files SET is_current = 0 WHERE id = ?', cut.id);
+      logChange(db, { ...ctx(req, ep), type: 'audio', id: cut.id, key: 'log.autocutRemoved' });
+    }
+    res.json(autocutState(db, ep));
   });
 
   // Accept all open suggestions at once

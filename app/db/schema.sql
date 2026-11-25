@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS episodes (
 );
 
 -- kind: main | moderation | intro | music | name ; variant: raw | cut (auto-cut)
+-- A cut version points to its original (source_id); cut_info holds the requested and applied cuts (JSON).
 CREATE TABLE IF NOT EXISTS audio_files (
   id INTEGER PRIMARY KEY,
   podcast_id INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
@@ -103,7 +104,9 @@ CREATE TABLE IF NOT EXISTS audio_files (
   size INTEGER NOT NULL DEFAULT 0,
   duration REAL,
   created_by INTEGER REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  source_id INTEGER REFERENCES audio_files(id) ON DELETE CASCADE,
+  cut_info TEXT
 );
 
 -- Transcript as JSON list of words {w, s, e, sp, f(iller), c(onfidence)}
@@ -112,6 +115,8 @@ CREATE TABLE IF NOT EXISTS transcripts (
   audio_file_id INTEGER REFERENCES audio_files(id),
   language TEXT,
   words TEXT NOT NULL,
+  gaps TEXT,      -- JSON: measured loudness between words [{start, end, quiet, db}] (auto-cut)
+  loudness TEXT,  -- JSON: {speechDb, floorDb, thresholdDb} of that measurement
   version INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_by INTEGER REFERENCES users(id)
@@ -194,6 +199,14 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   claimed_at TEXT,
   finished_at TEXT
+);
+
+-- Auto-cut: manual decisions per proposal ({"h:12.345": true, "p:40.100": false})
+CREATE TABLE IF NOT EXISTS autocut (
+  episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+  overrides TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_by INTEGER REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS settings (

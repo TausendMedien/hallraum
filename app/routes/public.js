@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { html, raw, fmtTime, jsonScript, esc } from '../lib/html.js';
 import { publicPage } from '../lib/layout.js';
 import { toParagraphs } from '../lib/transcript.js';
-import { currentAudio } from '../lib/episodes.js';
+import { listenerAudio } from '../lib/autocut-state.js';
 import { translator, isLocale, fromAcceptLanguage, clientStrings } from '../lib/i18n.js';
 
 // FTS5 query from user input: every word as a prefix search
@@ -15,6 +15,14 @@ const RATES = ['0.75', '1', '1.25', '1.5', '1.75', '2'];
 
 export default function publicRoutes(db) {
   const r = Router();
+  // All stored times refer to the original recording. Listeners may hear the auto-cut version,
+  // so every time shown or linked here goes through that version's timeline.
+  const heard = new Map();
+  const listen = (episodeId) => {
+    if (!heard.has(episodeId)) heard.set(episodeId, listenerAudio(db, episodeId));
+    return heard.get(episodeId);
+  };
+  r.use((req, res, next) => { heard.clear(); next(); }); // fresh per request
 
   const podcastBySlug = (slug) => db.get('SELECT * FROM podcasts WHERE slug = ?', slug);
   // Public pages speak the podcast's language (if the UI supports it)
@@ -54,7 +62,7 @@ export default function publicRoutes(db) {
         <ul class="tagcloud">${tags.map((tag) => html`<li><a href="/${p.slug}/topic/${encodeURIComponent(tag.name)}">${tag.name} <small>${tag.n}</small></a></li>`)}</ul></section>` : ''}
       <section><h2>${t('pub.episodes')}</h2>
       ${eps.length ? html`<ul class="pubeps">${eps.map((e) => {
-        const a = currentAudio(db, e.id, 'main');
+        const a = listen(e.id).audio;
         const w = warningsOf(e);
         return html`<li><a href="/${p.slug}/${e.slug}"><span class="eplabel">${epLabel(t, e)}</span> <strong>${e.title}</strong></a>
           <small>${a?.duration ? fmtTime(a.duration) : ''}${e.explicit ? ' · ' + t('pub.explicit') : ''}</small>
@@ -74,6 +82,7 @@ export default function publicRoutes(db) {
     const hits = fq ? db.all(`SELECT f.episode_id, f.start, snippet(transcript_fts, 0, '[[', ']]', ' … ', 18) AS snip, e.title, e.slug, e.number
       FROM transcript_fts f JOIN episodes e ON e.id = f.episode_id
       WHERE transcript_fts MATCH ? AND f.podcast_id = ? AND e.status = 'published' ORDER BY rank LIMIT 100`, fq, p.id) : [];
+    for (const h of hits) h.start = listen(h.episode_id).timeline.toCut(h.start);
     const mark = (s) => raw(esc(s).replace(/\[\[/g, '<mark>').replace(/\]\]/g, '</mark>'));
     res.send(publicPage(t, p, `${t('pub.search')}: ${q}`, html`<div class="wrap"><h1>${t('pub.search')}</h1>
       <form method="get" role="search" class="bigsearch"><label for="q2" class="sr-only">${t('pub.searchTerm')}</label>
@@ -89,10 +98,11 @@ export default function publicRoutes(db) {
     const t = tFor(p);
     const tag = db.get('SELECT * FROM tags WHERE podcast_id = ? AND name = ? COLLATE NOCASE', p.id, req.params.tag);
     if (!tag) return next();
-    const items = db.all(`SELECT s.id, s.start, s.end, s.title, e.id AS episode_id, e.title AS episode_title, e.slug, e.number, e.content_warnings, a.id AS audio_id
+    const items = db.all(`SELECT s.id, s.start, s.end, s.title, e.id AS episode_id, e.title AS episode_title, e.slug, e.number, e.content_warnings
       FROM sections s JOIN section_tags st ON st.section_id = s.id JOIN episodes e ON e.id = s.episode_id
-      JOIN audio_files a ON a.episode_id = e.id AND a.kind = 'main' AND a.is_current = 1
-      WHERE st.tag_id = ? AND s.accepted = 1 AND e.status = 'published' ORDER BY e.published_at, e.number, s.start`, tag.id);
+      WHERE st.tag_id = ? AND s.accepted = 1 AND e.status = 'published' ORDER BY e.published_at, e.number, s.start`, tag.id)
+      .filter((i) => listen(i.episode_id).audio)
+      .map((i) => { const tl = listen(i.episode_id).timeline; return { ...i, start: tl.toCut(i.start), end: tl.toCut(i.end), audio_id: listen(i.episode_id).audio.id }; });
     const list = items.map((i) => ({ id: i.id, start: i.start, end: i.end, title: i.title, episode: i.episode_title, url: `/${p.slug}/${i.slug}`, audio: `/media/audio/${i.audio_id}`, warnings: warningsOf(i) }));
     const warnings = [...new Set(list.flatMap((i) => i.warnings))];
     const total = list.reduce((s, i) => s + (i.end - i.start), 0);
@@ -128,14 +138,19 @@ export default function publicRoutes(db) {
     const ep = db.get(`SELECT e.*, s.number AS season_number FROM episodes e LEFT JOIN seasons s ON s.id = e.season_id
       WHERE e.podcast_id = ? AND e.slug = ? AND e.status = 'published'`, p.id, req.params.ep);
     if (!ep) return next();
-    const audio = currentAudio(db, ep.id, 'main');
+    const { audio, timeline: tl } = listen(ep.id);
     const tr = db.get('SELECT words, language FROM transcripts WHERE episode_id = ?', ep.id);
-    const words = tr ? JSON.parse(tr.words) : [];
+    // Words that were cut out are not shown; all times follow the version listeners hear
+    const words = (tr ? JSON.parse(tr.words) : [])
+      .map((w) => ({ ...w, s: tl.toCut(w.s), e: tl.toCut(w.e), cut: w.e > w.s && tl.toCut(w.s) === tl.toCut(w.e) }))
+      .filter((w) => !w.cut);
     const speakers = JSON.parse(ep.speaker_names || '{}');
-    const chapters = db.all('SELECT start, title, summary FROM chapters WHERE episode_id = ? AND accepted = 1 ORDER BY start', ep.id);
+    const chapters = db.all('SELECT start, title, summary FROM chapters WHERE episode_id = ? AND accepted = 1 ORDER BY start', ep.id)
+      .map((c) => ({ ...c, start: tl.toCut(c.start) }));
     const sections = db.all(`SELECT s.id, s.start, s.end, s.title, GROUP_CONCAT(t.name, '|') AS tags FROM sections s
       LEFT JOIN section_tags st ON st.section_id = s.id LEFT JOIN tags t ON t.id = st.tag_id
-      WHERE s.episode_id = ? AND s.accepted = 1 GROUP BY s.id ORDER BY s.start`, ep.id).map((s) => ({ ...s, tags: s.tags ? s.tags.split('|') : [] }));
+      WHERE s.episode_id = ? AND s.accepted = 1 GROUP BY s.id ORDER BY s.start`, ep.id)
+      .map((s) => ({ ...s, start: tl.toCut(s.start), end: tl.toCut(s.end), tags: s.tags ? s.tags.split('|') : [] }));
     const warnings = warningsOf(ep);
     const paras = toParagraphs(words);
     let wi = 0;

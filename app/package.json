@@ -14,7 +14,8 @@
     "dev": "node --watch server.js",
     "test": "node --test test/*.test.js",
     "admin": "node scripts/create-admin.js",
-    "worker": "sh ../worker/start.sh"
+    "worker": "sh ../worker/start.sh",
+    "autocut-report": "node scripts/autocut-report.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.10.0",

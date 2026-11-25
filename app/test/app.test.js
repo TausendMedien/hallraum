@@ -224,6 +224,117 @@ test('public pages follow the podcast language', async () => {
   assert.match(body, /Die erste Folge erscheint bald/);
 });
 
+test('auto-cut: settings, measuring, decisions, cutting and the listening page', async () => {
+  const { makeTimeline } = await import('../lib/autocut.js');
+  const ep = () => db.get('SELECT * FROM episodes WHERE id = ?', epId);
+  const worker = (path, body) => fetch(base + path, { method: 'POST', headers: W, body: JSON.stringify(body) });
+  const state = async () => (await json(benCookie, 'GET', `/api/episodes/${epId}/autocut`)).json();
+
+  // Podcast defaults through the settings form (keeping all other fields)
+  const pod = db.get(`SELECT * FROM podcasts WHERE slug = 'sample-show'`);
+  const theme = JSON.parse(pod.theme || '{}');
+  const saved = await form(annaCookie, '/admin/settings', {
+    name: pod.name, slug: pod.slug, subtitle: pod.subtitle, description: pod.description, author: pod.author, owner_email: pod.owner_email,
+    language: pod.language, category: pod.category, accent: theme.accent || '#7b2cbf', bg: theme.bg || '#ffffff', fg: theme.fg || '#1a1a1a', pattern: theme.pattern || 'none',
+    content_warning_options: JSON.parse(pod.content_warning_options).join('\n'),
+    ac_pauses: '1', ac_longerThan: '1.2', ac_shortenTo: '0.7', ac_turnLongerThan: '1.5', ac_turnShortenTo: '1', ac_hesitations: 'certain', ac_fillers: 'off',
+  });
+  assert.equal(saved.status, 302);
+  assert.equal(JSON.parse(db.get('SELECT autocut_settings s FROM podcasts WHERE id = ?', pod.id).s).hesitations, 'certain');
+  assert.match(await page(annaCookie, '/admin/settings'), /Auto-cut \(defaults for new episodes\)/);
+
+  // Proposals: "um," is certain and marked; the pause at the change of speaker is not measured yet
+  let st = await state();
+  assert.equal(st.active, true);
+  assert.equal(st.measured, false);
+  const um = st.cuts.find((c) => c.type === 'hesitation');
+  assert.equal(um.group, 'certain');
+  assert.equal(um.marked, true);
+  let pause = st.cuts.find((c) => c.type === 'pause');
+  assert.equal(pause.group, 'unsure', 'not measured and at a change of speaker');
+  assert.equal(pause.marked, false);
+  assert.ok(computeChecklist(db, ep()).items.find((i) => i.key === 'autocut'), 'checklist step while auto-cut is on');
+
+  // Measuring the pauses: an "analyze" job for the worker
+  st = await (await json(benCookie, 'POST', `/api/episodes/${epId}/autocut/analyze`)).json();
+  assert.equal(st.jobs.analyze.status, 'queued');
+  const old = await (await worker('/api/worker/next', { types: ['transcribe'] })).json();
+  assert.equal(old.job, null, 'older workers that only transcribe do not get the new job types');
+  const an = (await (await worker('/api/worker/next', { types: ['transcribe', 'analyze', 'autocut'] })).json()).job;
+  assert.equal(an.type, 'analyze');
+  assert.equal(an.words.length, 6);
+  assert.equal((await worker(`/api/worker/jobs/${an.id}/result`, { gaps: [{ start: 1.2, end: 3, quiet: true, db: -62 }], loudness: { speechDb: -20, floorDb: -65, thresholdDb: -45 } })).status, 200);
+  st = await state();
+  assert.equal(st.measured, true);
+  pause = st.cuts.find((c) => c.type === 'pause');
+  assert.equal(pause.group, 'likely', 'quiet, but at a change of speaker');
+  assert.equal(pause.marked, true);
+
+  // Manual decisions: switch the hesitation off, then back to automatic
+  st = await (await json(benCookie, 'PUT', `/api/episodes/${epId}/autocut`, { overrides: { [um.id]: false } })).json();
+  assert.equal(st.cuts.find((c) => c.id === um.id).marked, false);
+  assert.equal(st.cuts.find((c) => c.id === um.id).manual, true);
+  st = await (await json(benCookie, 'PUT', `/api/episodes/${epId}/autocut`, { overrides: { [um.id]: null } })).json();
+  assert.equal(st.cuts.find((c) => c.id === um.id).marked, true);
+  assert.equal(st.ranges.length, 2);
+
+  // Episode settings override the podcast's
+  st = await (await json(benCookie, 'PUT', `/api/episodes/${epId}/autocut`, { settings: { ...st.settings, fillers: 'likely' } })).json();
+  assert.equal(st.ownSettings, true);
+  st = await (await json(benCookie, 'PUT', `/api/episodes/${epId}/autocut`, { settings: null })).json();
+  assert.equal(st.ownSettings, false);
+
+  // "Cut everything marked": the worker renders and uploads the cut version
+  st = await (await json(benCookie, 'POST', `/api/episodes/${epId}/autocut/render`)).json();
+  assert.equal(st.jobs.autocut.status, 'queued');
+  const job = (await (await worker('/api/worker/next', { types: ['transcribe', 'analyze', 'autocut'] })).json()).job;
+  assert.equal(job.type, 'autocut');
+  assert.deepEqual(job.options.ranges, st.ranges);
+  for (const [type, ctype] of [['audio', 'audio/flac'], ['mp3', 'audio/mpeg']]) {
+    const up = await fetch(`${base}/api/worker/jobs/${job.id}/cut-file?type=${type}`, { method: 'POST', headers: { ...W, 'content-type': ctype }, body: wav() });
+    assert.equal(up.status, 200);
+  }
+  const applied = job.options.ranges.map((r) => [r.start - 0.01, r.end]); // the worker snapped a boundary
+  assert.equal((await worker(`/api/worker/jobs/${job.id}/result`, { cuts: applied, duration: 3.1 })).status, 200);
+  st = await state();
+  assert.ok(st.cut, 'cut version exists');
+  assert.equal(st.cut.count, 2);
+  assert.equal(st.outdated, false);
+  assert.ok(computeChecklist(db, ep()).items.find((i) => i.key === 'autocut').done);
+  assert.match(await page(benCookie, `/admin/episodes/${epId}`), /Auto-cut version: \d+ s shorter \(2 cuts\)/);
+
+  // Listeners hear the cut version: times follow it and the cut "um," is gone
+  const tl = makeTimeline(applied.map(([start, end]) => ({ start, end })));
+  const body = await page('', '/sample-show/1-media-in-everyday-life-with-mira');
+  assert.match(body, new RegExp(`<audio preload="metadata" src="/media/audio/${st.cut.id}"`));
+  assert.doesNotMatch(body, />um,</);
+  assert.match(body, new RegExp(`data-s="${tl.toCut(3)}"[^>]*>Media<`));
+  assert.equal((await fetch(`${base}/media/audio/${st.cut.id}`, { headers: { range: 'bytes=0-9' } })).status, 206, 'the cut version is public once published');
+  assert.match(await page('', '/sample-show/search?q=matters'), new RegExp(`\\?t=${Math.floor(tl.toCut(3))}`));
+
+  // Downloads: original and cut version for the team only
+  const raw = db.get(`SELECT id FROM audio_files WHERE episode_id = ? AND variant = 'raw' AND is_current = 1`, epId);
+  const dl = await fetch(`${base}/media/download/${raw.id}?f=original`, { headers: { cookie: benCookie } });
+  assert.equal(dl.status, 200);
+  assert.match(dl.headers.get('content-disposition'), /attachment; filename="?mira\.wav"?/);
+  assert.match((await fetch(`${base}/media/download/${st.cut.id}?f=mp3`, { headers: { cookie: benCookie } })).headers.get('content-disposition'), /mira \(auto-cut\)\.mp3/);
+  assert.equal((await fetch(`${base}/media/download/${raw.id}?f=original`)).status, 404);
+  assert.equal((await fetch(`${base}/media/download/${raw.id}?f=original`, { headers: { cookie: ottoCookie } })).status, 404);
+
+  // Changing a mark makes the cut version outdated
+  st = await (await json(benCookie, 'PUT', `/api/episodes/${epId}/autocut`, { overrides: { [pause.id]: false } })).json();
+  assert.equal(st.outdated, true);
+  const step = computeChecklist(db, ep()).items.find((i) => i.key === 'autocut');
+  assert.equal(step.done, false);
+  assert.equal(step.detail.key, 'check.autocutOutdated');
+
+  // Removing the cut version: listeners hear the original again
+  st = await (await json(benCookie, 'DELETE', `/api/episodes/${epId}/autocut/cut`)).json();
+  assert.equal(st.cut, null);
+  assert.match(await page('', '/sample-show/1-media-in-everyday-life-with-mira'), new RegExp(`src="/media/audio/${raw.id}"`));
+  assert.ok(db.get(`SELECT 1 FROM changes WHERE episode_id = ? AND summary LIKE '%log.autocutDone%'`, epId), 'logged');
+});
+
 test('every translation key exists in English and German', async () => {
   const { default: en } = await import('../locales/en.js');
   const { default: de } = await import('../locales/de.js');

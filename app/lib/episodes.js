@@ -23,8 +23,16 @@ export function loadEpisode(db, req, id) {
   return ep;
 }
 
+// The current original recording (not an auto-cut version)
 export function currentAudio(db, episodeId, kind = 'main') {
-  return db.get(`SELECT * FROM audio_files WHERE episode_id = ? AND kind = ? AND is_current = 1 ORDER BY id DESC LIMIT 1`, episodeId, kind);
+  return db.get(`SELECT * FROM audio_files WHERE episode_id = ? AND kind = ? AND variant = 'raw' AND is_current = 1 ORDER BY id DESC LIMIT 1`, episodeId, kind);
+}
+
+// The current auto-cut version of the current original (or undefined)
+export function currentCut(db, episodeId) {
+  const raw = currentAudio(db, episodeId, 'main');
+  if (!raw) return undefined;
+  return db.get(`SELECT * FROM audio_files WHERE episode_id = ? AND kind = 'main' AND variant = 'cut' AND is_current = 1 AND source_id = ? ORDER BY id DESC LIMIT 1`, episodeId, raw.id);
 }
 
 // Stream a multipart upload to disk: form fields + exactly one file
@@ -113,9 +121,11 @@ function progressLabel(t, code) {
   return s === key ? code : s;
 }
 
+export const latestJob = (db, episodeId, type) => db.get('SELECT * FROM jobs WHERE episode_id = ? AND type = ? ORDER BY id DESC LIMIT 1', episodeId, type);
+
 // Latest transcription job and worker heartbeat. Returns a translated label.
 export function jobStatus(db, episodeId, t) {
-  const job = db.get('SELECT * FROM jobs WHERE episode_id = ? AND type = ? ORDER BY id DESC LIMIT 1', episodeId, 'transcribe');
+  const job = latestJob(db, episodeId, 'transcribe');
   const hb = db.get(`SELECT value FROM settings WHERE key = 'worker_heartbeat'`)?.value;
   let label = null;
   if (job && t) {

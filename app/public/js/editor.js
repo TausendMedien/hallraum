@@ -1,5 +1,5 @@
 // Transcript editor: correct text (timestamps are kept), name speakers,
-// edit chapters and tagged sections, accept Claude suggestions.
+// edit chapters and tagged sections, accept Claude suggestions, review auto-cut proposals.
 const root = document.getElementById('editor');
 const epId = root.dataset.episode;
 const audioSrc = root.dataset.audio;
@@ -51,6 +51,10 @@ let speakerNames = {};
 let dirty = false;
 let editMode = false;
 let draft = null;      // open "new section/chapter" form: { kind, start, end, text }
+let AC = null;         // auto-cut state from the server
+let acFilter = 'all';  // which certainty groups are shown in the transcript
+let cutMode = false;   // clicking a marked word switches its cut on/off
+let preview = false;   // the player skips marked ranges
 
 const audio = h('audio', { controls: true, preload: 'metadata', src: audioSrc });
 const status = h('span.status', { 'aria-live': 'polite' });
@@ -67,6 +71,7 @@ window.addEventListener('beforeunload', (e) => { if (dirty) { e.preventDefault()
 
 async function load() {
   S = await api('GET', `/api/episodes/${epId}/editor`);
+  AC = await api('GET', `/api/episodes/${epId}/autocut`).catch(() => null);
   words = S.transcript ? S.transcript.words.map((w) => ({ ...w })) : [];
   speakerNames = { ...S.episode.speakerNames };
   render();
@@ -85,7 +90,9 @@ function render() {
       h('div.main', {},
         h('div.sticky', {}, audio,
           h('div.inline', {},
-            h('label.check', {}, h('input', { type: 'checkbox', onchange: (e) => { editMode = e.target.checked; renderTranscript(); } }), ' ', t('editText')),
+            h('label.check', {}, h('input', { type: 'checkbox', id: 'editmode', onchange: (e) => { editMode = e.target.checked; if (editMode) setCutMode(false); renderTranscript(); } }), ' ', t('editText')),
+            h('label.check.acopt', {}, h('input', { type: 'checkbox', id: 'cutmode', onchange: (e) => setCutMode(e.target.checked) }), ' ', t('acEditCuts')),
+            h('label.check.acopt', {}, h('input', { type: 'checkbox', id: 'preview', onchange: (e) => setPreview(e.target.checked) }), ' ', t('acPreview')),
             h('label.check', {}, h('input', { type: 'checkbox', checked: true, onchange: (e) => transcriptEl.classList.toggle('hidefill', !e.target.checked) }), ' ', t('showFillers')),
             saveBtn, status),
           h('p.muted.small', {}, t('help'))),
@@ -107,9 +114,70 @@ function paragraphs() {
   return out;
 }
 
+// ---------- Auto-cut marks ----------
+const GROUP_LABEL = { certain: 'acCertain', likely: 'acLikely', unsure: 'acUnsure' };
+const shown = (c) => acFilter === 'all' || acFilter === c.group;
+
+// Which word belongs to which proposed cut, and after which word a pause marker goes (matched by time)
+function cutMarks() {
+  const byWord = new Map(), pauseAfter = new Map();
+  if (!AC?.active || acFilter === 'none') return { byWord, pauseAfter };
+  const firstFrom = (time) => { let lo = 0, hi = words.length; while (lo < hi) { const m = (lo + hi) >> 1; if (words[m].s < time) lo = m + 1; else hi = m; } return lo; };
+  for (const c of AC.cuts) {
+    if (!shown(c)) continue;
+    if (c.type === 'pause') {
+      const i = firstFrom(c.end) - 1;
+      if (i >= 0) pauseAfter.set(i, c);
+      continue;
+    }
+    for (let i = firstFrom(c.start - 0.001); i < words.length && words[i].e <= c.end + 0.001; i++) byWord.set(i, c);
+  }
+  return { byWord, pauseAfter };
+}
+
+const cutClass = (c) => `ac ac-${c.group}${c.marked ? ' ac-on' : ''}${c.manual ? ' ac-manual' : ''}`;
+const cutTitle = (c) => [t(GROUP_LABEL[c.group]), ...c.reasons.map((r) => t('acReason.' + r)), c.marked ? t('acWillCut') : t('acWillKeep')].join(' · ');
+
+async function toggleCut(id) {
+  const c = AC.cuts.find((x) => x.id === id);
+  if (!c) return;
+  const want = !c.marked;
+  // Back to the automatic decision if that is what the user now wants
+  const value = want === c.on ? null : want;
+  try { AC = await api('PUT', `/api/episodes/${epId}/autocut`, { overrides: { [id]: value } }); renderTranscript(); renderPanel(); }
+  catch (e) { alert(e.message); }
+}
+
+function setCutMode(on) {
+  cutMode = on;
+  const box = document.getElementById('cutmode');
+  if (box) box.checked = on;
+  if (on && editMode) { editMode = false; const em = document.getElementById('editmode'); if (em) em.checked = false; }
+  transcriptEl.classList.toggle('cutmode', on);
+  renderTranscript();
+}
+
+// Preview: while playing, jump over every marked range
+let rafId = 0;
+function setPreview(on) {
+  preview = on;
+  cancelAnimationFrame(rafId);
+  if (on) rafId = requestAnimationFrame(skipLoop);
+}
+function skipLoop() {
+  if (!preview) return;
+  if (!audio.paused && AC?.ranges?.length) {
+    const time = audio.currentTime;
+    const r = AC.ranges.find((x) => time >= x.start && time < x.end - 0.01);
+    if (r) audio.currentTime = r.end;
+  }
+  rafId = requestAnimationFrame(skipLoop);
+}
+
 function renderTranscript() {
   const speakers = Object.keys(speakerNames);
   transcriptEl.classList.toggle('editmode', editMode);
+  const { byWord, pauseAfter } = cutMarks();
   transcriptEl.replaceChildren(...paragraphs().map((p) => {
     const first = words[p.idx[0]];
     const who = editMode && speakers.length
@@ -120,8 +188,18 @@ function renderTranscript() {
     p.idx.forEach((i) => {
       const w = words[i];
       const low = w.c != null && w.c < 0.5;
-      const cls = [w.f ? 'f' : '', low ? 'low' : ''].join(' ').trim();
-      para.append(h('span', { 'data-i': i, class: cls || null, title: `${fmt(w.s)}–${fmt(w.e)}${low ? ' · ' + t('lowConfidence') : ''}` }, w.w), ' ');
+      const c = byWord.get(i);
+      const cls = [w.f ? 'f' : '', low ? 'low' : '', c ? cutClass(c) : ''].join(' ').trim();
+      const title = `${fmt(w.s)}–${fmt(w.e)}${low ? ' · ' + t('lowConfidence') : ''}${c ? ' · ' + cutTitle(c) : ''}`;
+      para.append(h('span', { 'data-i': i, 'data-cut': c?.id, class: cls || null, title }, w.w), ' ');
+      const pc = pauseAfter.get(i);
+      if (pc && words[i + 1]) {
+        const gap = words[i + 1].s - w.e;
+        const after = gap - (pc.end - pc.start);
+        para.append(h(`button.acp.${cutClass(pc).split(' ').join('.')}`, { type: 'button', 'data-cut': pc.id, title: cutTitle(pc),
+          'aria-pressed': pc.marked ? 'true' : 'false', onclick: () => toggleCut(pc.id) },
+        `⏸ ${gap.toFixed(1)} s${pc.marked ? ` → ${after.toFixed(1)} s` : ''}`), ' ');
+      }
     });
     return para;
   }));
@@ -135,6 +213,7 @@ transcriptEl.addEventListener('click', (e) => {
   const sel = getSelection();
   if (sel && !sel.isCollapsed) return;
   const i = Number(span.dataset.i);
+  if (cutMode && span.dataset.cut) { toggleCut(span.dataset.cut); return; }
   if (editMode) editWord(span, i); else seek(words[i].s);
 });
 
@@ -211,6 +290,8 @@ async function save() {
     const r = await api('PUT', `/api/episodes/${epId}/transcript`, { words, version: S.transcript.version, speakerNames });
     S.transcript.version = r.version;
     setDirty(false);
+    AC = await api('GET', `/api/episodes/${epId}/autocut`).catch(() => AC);
+    renderTranscript(); renderPanel();
     status.textContent = r.conflict ? t('savedConflict', { name: r.conflictBy || t('someoneElse') }) : t('saved');
   } catch (e) { status.textContent = e.message; saveBtn.disabled = false; }
 }
@@ -306,6 +387,7 @@ function renderPanel() {
 
   panel.replaceChildren(...[
     draftForm(),
+    autocutBox(),
     h('section.box', {}, h('h2', {}, t('suggestions')), claudeBtn,
       proposals ? h('p', {}, t('openProposals', { n: proposals }), ' ',
         h('button.small', { onclick: () => act(() => api('POST', `/api/episodes/${epId}/suggestions/accept-all`, {})) }, t('acceptAll'))) : null),
@@ -318,6 +400,85 @@ function renderPanel() {
       h('ol.items', {}, S.sections.map(sectionRow))),
     h('datalist', { id: 'alltags' }, S.allTags.map((x) => h('option', { value: x }))),
   ].filter(Boolean));
+}
+
+// ---------- Auto-cut panel ----------
+const THRESHOLDS = ['off', 'certain', 'likely', 'all'];
+const TYPES = ['hesitation', 'filler', 'pause'];
+
+async function acAct(fn) {
+  try { AC = await fn(); renderTranscript(); renderPanel(); }
+  catch (e) { alert(e.message); }
+}
+
+function jobLine(job, kind) {
+  if (!job || job.status === 'done') return null;
+  const label = job.status === 'error' ? `${t('acJobError')}: ${job.error || ''}`
+    : job.status === 'queued' ? t('acJobQueued') : `${t(kind === 'analyze' ? 'acMeasuring' : 'acCutting')} ${job.progress ? t('acProgress.' + job.progress) : ''}`;
+  return h(`p.small${job.status === 'error' ? '.err' : ''}`, {}, label);
+}
+
+let acPoll = 0;
+function pollJobs() {
+  clearTimeout(acPoll);
+  const running = ['analyze', 'autocut'].some((k) => ['queued', 'running'].includes(AC?.jobs?.[k]?.status));
+  if (running) acPoll = setTimeout(async () => { AC = await api('GET', `/api/episodes/${epId}/autocut`).catch(() => AC); renderTranscript(); renderPanel(); }, 10000);
+}
+
+function autocutBox() {
+  if (!AC || !S.transcript) return null;
+  pollJobs();
+  const s = AC.settings;
+  const saveSettings = (next) => acAct(() => api('PUT', `/api/episodes/${epId}/autocut`, { settings: next }));
+  const change = (fn) => () => { const next = structuredClone(s); fn(next); saveSettings(next); };
+  const numIn = (key, label) => h('label.small', {}, label, ' ', h('input.num', { type: 'number', min: 0.1, max: 30, step: 0.1, value: s.pauses[key],
+    disabled: !s.pauses.on, onchange: (e) => change((n) => { n.pauses[key] = Number(e.target.value); })() }), ' s');
+  const thresholdSel = (key) => h('select', { 'aria-label': t('ac.' + key), onchange: (e) => change((n) => { n[key] = e.target.value; })() },
+    THRESHOLDS.map((v) => h('option', { value: v, selected: s[key] === v }, t('acThreshold.' + v))));
+
+  // Counts per type and group
+  const count = (type, group) => AC.cuts.filter((c) => c.type === type && (!group || c.group === group)).length;
+  const summary = AC.active ? h('table.actable', {},
+    h('tr', {}, h('th', {}, ''), ...['certain', 'likely', 'unsure'].map((g) => h('th', {}, h('span', { class: `acdot ac-${g}` }), ' ', t(GROUP_LABEL[g])))),
+    ...TYPES.map((type) => h('tr', {}, h('td', {}, t('acType.' + type)), ...['certain', 'likely', 'unsure'].map((g) => h('td', {}, count(type, g) || '–'))))) : null;
+  const marked = AC.cuts.filter((c) => c.marked).length;
+
+  const filter = h('div.inline.small', { role: 'radiogroup', 'aria-label': t('acShow') }, t('acShow'), ' ',
+    ...['all', 'certain', 'likely', 'unsure', 'none'].map((v) => h('label.check', {},
+      h('input', { type: 'radio', name: 'acfilter', value: v, checked: acFilter === v, onchange: () => { acFilter = v; renderTranscript(); } }), ' ', t('acFilter.' + v))));
+
+  const cut = AC.cut;
+  const cutInfo = cut ? h('div', {},
+    h('p', {}, t('acCutReady', { when: new Date(cut.createdAt.replace(' ', 'T') + 'Z').toLocaleString(), n: cut.count, seconds: Math.round(cut.removed || 0) })),
+    AC.outdated ? h('p.warn', {}, t('acOutdated')) : null,
+    h('audio', { controls: true, preload: 'none', src: `/media/audio/${cut.id}` }),
+    h('div.inline', {},
+      h('a.button.small', { href: `/media/download/${cut.id}?f=original` }, t('acDownloadFlac')),
+      cut.hasMp3 ? h('a.button.small', { href: `/media/download/${cut.id}?f=mp3` }, t('acDownloadMp3')) : null,
+      h('button.small.linkbtn.danger', { onclick: () => { if (confirm(t('acRemoveConfirm'))) acAct(() => api('DELETE', `/api/episodes/${epId}/autocut/cut`)); } }, t('acRemove')))) : null;
+
+  return h('section.box.autocut', {},
+    h('h2', {}, t('acHeading')),
+    h('p.muted.small', {}, AC.ownSettings ? t('acOwnSettings') : t('acPodcastSettings'),
+      AC.ownSettings ? [' ', h('button.small.linkbtn', { onclick: () => saveSettings(null) }, t('acUsePodcast'))] : null),
+    h('fieldset', {}, h('legend', {}, t('ac.pauses')),
+      h('label.check', {}, h('input', { type: 'checkbox', checked: s.pauses.on, onchange: (e) => change((n) => { n.pauses.on = e.target.checked; })() }), ' ', t('acShortenPauses')),
+      h('div.inline', {}, numIn('longerThan', t('acLongerThan')), numIn('shortenTo', t('acShortenTo'))),
+      h('div.inline', {}, numIn('turnLongerThan', t('acTurnLongerThan')), numIn('turnShortenTo', t('acShortenTo'))),
+      s.pauses.on && !AC.measured ? h('p.small', {}, t('acNotMeasured'), ' ',
+        h('button.small', { onclick: () => acAct(() => api('POST', `/api/episodes/${epId}/autocut/analyze`)) }, t('acMeasure'))) : null,
+      jobLine(AC.jobs.analyze, 'analyze')),
+    h('div.inline', {}, h('label', {}, t('ac.hesitations'), ' ', thresholdSel('hesitations'))),
+    h('div.inline', {}, h('label', {}, t('ac.fillers'), ' ', thresholdSel('fillers'))),
+    summary,
+    AC.active ? filter : null,
+    AC.active ? h('p.small.muted', {}, t('acHelp')) : null,
+    AC.active ? h('div.inline', {},
+      h('button.primary', { disabled: !AC.ranges.length, onclick: () => acAct(() => api('POST', `/api/episodes/${epId}/autocut/render`)) },
+        t('acCutAll', { n: marked, seconds: Math.round(AC.removed) })),
+      Object.values(AC.cuts).some((c) => c.manual) ? h('button.small.linkbtn', { onclick: () => { if (confirm(t('acResetConfirm'))) acAct(() => api('PUT', `/api/episodes/${epId}/autocut`, { resetOverrides: true })); } }, t('acReset')) : null) : null,
+    jobLine(AC.jobs.autocut, 'autocut'),
+    cutInfo);
 }
 
 load().catch((e) => { root.textContent = t('loadError', { message: e.message }); });

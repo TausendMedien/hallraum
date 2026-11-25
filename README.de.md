@@ -17,7 +17,7 @@ Hallraum wird auf Englisch entwickelt. **Deutsch** ist die erste weitere Sprache
 
 - **Oberfläche:** Englisch und Deutsch, pro Person wählbar (sonst nach Browsersprache). Die Hörseite spricht die Sprache des Podcasts.
 - **Transkription:** Die gesprochene Sprache wird automatisch erkannt; der Transkriptions-Helfer nutzt sprachspezifische Vorgaben, damit Verzögerungslaute wortgetreu mitgeschrieben werden.
-- **Füllwörter** werden pro Sprache erkannt. Deutsch hat eine eigene Liste (*äh, ähm, öh, hm …*), und Wörter, die in einer Sprache Füllwort, in einer anderen aber echtes Wort sind, werden richtig behandelt – z. B. ist englisches *um* ein Füllwort, deutsches *um* (wie in *um … zu*) nicht. Eine zweite Liste „weicher“ Füllwörter (*also, halt, sozusagen …*) ist für das geplante Modul „Auto-Schnitt“ vorbereitet.
+- **Füllwörter** werden pro Sprache erkannt. Deutsch hat eine eigene Liste (*äh, ähm, öh, hm …*), und Wörter, die in einer Sprache Füllwort, in einer anderen aber echtes Wort sind, werden richtig behandelt – z. B. ist englisches *um* ein Füllwort, deutsches *um* (wie in *um … zu*) nicht. Eine zweite Liste „weicher“ Füllwörter (*also, halt, sozusagen …*) nutzt der Auto-Schnitt.
 - **Claude-Vorschläge** (optional) kommen in der Sprache des Podcasts.
 
 Weitere Sprache hinzufügen: Wörterbuch in `app/locales/`, Füllwortlisten in `app/lib/languages.js` und eine Whisper-Vorgabe in `worker/worker.py`.
@@ -33,6 +33,7 @@ Weitere Sprache hinzufügen: Wörterbuch in `app/locales/`, Füllwortlisten in `
 - Gemeinsame Tag-Liste pro Podcast: umbenennen und zusammenführen
 - Checkliste pro Folge (automatisch erkannte und manuelle Schritte), Übersicht mit Fortschritt und nächstem Schritt
 - Änderungsprotokoll („zuletzt geändert von …“) und Hinweis bei gleichzeitigem Bearbeiten
+- **Auto-Schnitt:** lange Pausen kürzen, Verzögerungslaute (*äh, ähm*) und Füllwörter (*also, halt*) entfernen. Jeder Vorschlag ist im Transkript als sicher, wahrscheinlich oder unsicher markiert; das Team schaltet Markierungen an oder aus, hört eine Vorschau und schneidet alles Markierte mit einem Klick. Der Helfer erzeugt eine neue Fassung mit kurzen Überblendungen; das Original bleibt unverändert und herunterladbar. Die Hörer*innen hören die geschnittene Fassung, Kapitel, Transkript, Suche und Links passen sich automatisch an. Siehe [docs/auto-cut-plan.md](docs/auto-cut-plan.md).
 
 **Hörseite** (pro Podcast unter `/<kurzname>`)
 - Player mit Tempo, ±15 Sekunden, gemerkter Position und Tastaturbedienung
@@ -42,7 +43,7 @@ Weitere Sprache hinzufügen: Wörterbuch in `app/locales/`, Füllwortlisten in `
 - Link auf eine bestimmte Stelle (`?t=Sekunden`), Inhaltshinweise vor dem Abspielen
 - Gestaltung pro Podcast (Farben, Muster, Cover), barrierearm (Tastatur, Kontraste, Transkript als echter Text)
 
-**Geplant:** Teaser und Intro-Mischung, RSS-Feed mit Kapiteln und Transkript (Podcasting 2.0), geplantes Veröffentlichen, Gast-Freigabe, Glossar, einbettbarer Player, Social-Media-Clips, Modul „Auto-Schnitt“ (Füllwörter und Pausen mit einstellbarer Stärke entfernen).
+**Geplant:** Teaser und Intro-Mischung, RSS-Feed mit Kapiteln und Transkript (Podcasting 2.0), geplantes Veröffentlichen, Gast-Freigabe, Glossar, einbettbarer Player, Social-Media-Clips.
 
 ## Aufbau
 
@@ -81,6 +82,7 @@ Alternativ mit Docker: `docker compose up --build` startet App und Helfer zusamm
 
 - Gegen einen Server im Internet: in `.env` `WORKER_APP_URL=https://podcast.example.org` setzen, dann `npm run worker`
 - Modell: `WHISPER_MODEL=large-v3-turbo` (Standard, etwa Echtzeit auf einem aktuellen Mac) oder `large-v3` (genauer, deutlich langsamer)
+- Neben dem Transkribieren misst der Helfer, wie laut die Pausen sind, und erzeugt die Auto-Schnitt-Fassungen. Er braucht dafür `ffmpeg`.
 - Sprechererkennung: Hugging-Face-Konto anlegen, die Bedingungen von `pyannote/speaker-diarization-community-1` akzeptieren, Token als `HF_TOKEN` eintragen. Ohne Token wird alles einer Person zugeordnet.
 
 ## Claude-Vorschläge (optional)
@@ -90,6 +92,15 @@ Mit `ANTHROPIC_API_KEY` in der `.env` schlägt Claude Kapitel sowie Abschnitte m
 ## Auf einem Server installieren
 
 Siehe [README.md](README.md#installing-on-a-server) – kurz: `git clone`, in `app/` `npm ci --omit=dev`, Node-Anwendung mit Startdatei `app/server.js` und den Umgebungsvariablen `WORKER_TOKEN`, optional `ANTHROPIC_API_KEY`, `DATA_DIR` (außerhalb des öffentlichen Web-Verzeichnisses) einrichten, HTTPS aktivieren, einmal `create-admin.js` ausführen, Upload-Limit auf mindestens 1 GB setzen.
+
+## Tests
+
+```bash
+cd app && npm test
+cd worker && python -m unittest test_audio_tools.py   # braucht numpy und ffmpeg, kein WhisperX
+```
+
+Auswertung für die Feinabstimmung des Auto-Schnitts mit echten Folgen: `cd app && npm run autocut-report` (siehe [docs/auto-cut-tuning.md](docs/auto-cut-tuning.md)).
 
 ## Lizenz
 

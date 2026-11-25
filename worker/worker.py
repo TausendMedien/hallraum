@@ -1,8 +1,13 @@
 """Hallraum transcription worker.
 
 Runs on a separate computer (directly with Python or in Docker). Polls the app for jobs,
-downloads the audio, transcribes it with WhisperX (word-level timestamps, speaker
-detection) and sends the result back. Needs no open ports; the app never depends on it.
+downloads the audio and sends the result back. Needs no open ports; the app never depends on it.
+
+Job types:
+  transcribe  WhisperX transcript (word-level timestamps, speaker detection) plus the
+              loudness of the pauses between words (for auto-cut)
+  analyze     only the loudness of the pauses, for transcripts made before auto-cut existed
+  autocut     cut the marked ranges out of the original audio (see audio_tools.py)
 
 Environment variables:
   APP_URL          e.g. https://podcast.example.org (local: http://localhost:3000)
@@ -25,6 +30,8 @@ import traceback
 import urllib.request
 import urllib.error
 
+import audio_tools
+
 APP_URL = os.environ.get("APP_URL", "http://localhost:3000").rstrip("/")
 TOKEN = os.environ.get("WORKER_TOKEN", "")
 HF_TOKEN = os.environ.get("HF_TOKEN") or None
@@ -33,6 +40,7 @@ POLL = int(os.environ.get("POLL_SECONDS", "30"))
 THREADS = int(os.environ.get("THREADS", str(os.cpu_count() or 4)))
 DEVICE = "cpu"  # WhisperX only uses the CPU on a Mac (and in Docker)
 INFO = f"{socket.gethostname()} · {MODEL}"
+JOB_TYPES = ["transcribe", "analyze", "autocut"]
 
 # Initial prompts that encourage verbatim transcripts including filler words
 # (the basis for filler detection and the planned auto-cut module). One per language.
@@ -163,7 +171,38 @@ def transcribe(job, path, progress):
                 "sp": w.get("speaker") or seg.get("speaker") or "SPEAKER_00",
                 "c": round(w["score"], 2) if "score" in w else None,
             })
-    return {"language": language, "duration": duration, "words": words}
+    progress.set("measuring")
+    loudness = audio_tools.measure_gaps(audio, 16000, words)
+    return {"language": language, "duration": duration, "words": words,
+            "gaps": loudness.pop("gaps"), "loudness": loudness}
+
+
+def analyze(job, path, progress):
+    """Loudness of the pauses between the words of an existing transcript."""
+    progress.set("measuring")
+    data, rate = audio_tools.load_pcm(path, rate=16000, channels=1)
+    words = [{"s": w[0], "e": w[1]} for w in job.get("words") or []]
+    loudness = audio_tools.measure_gaps(audio_tools.to_mono_float(data), rate, words)
+    return {"gaps": loudness.pop("gaps"), "loudness": loudness}
+
+
+def autocut(job, path, progress, tmp):
+    """Cuts the marked ranges out of the original audio and uploads the result (FLAC + MP3)."""
+    opts = job.get("options") or {}
+    progress.set("loading")
+    data, rate = audio_tools.load_pcm(path)
+    progress.set("cutting")
+    ranges = audio_tools.snap_ranges(data, rate, opts.get("ranges") or [])
+    out = os.path.join(tmp, "cut.flac")
+    duration = audio_tools.render(data, rate, ranges, out)
+    progress.set("encoding")
+    mp3 = os.path.join(tmp, "cut.mp3")
+    audio_tools.to_mp3(out, mp3)
+    progress.set("uploading")
+    for kind, file, ctype in (("audio", out, "audio/flac"), ("mp3", mp3, "audio/mpeg")):
+        with open(file, "rb") as f:
+            call("POST", f"/api/worker/jobs/{job['id']}/cut-file?type={kind}", raw=f.read(), content_type=ctype, timeout=900)
+    return {"cuts": ranges, "duration": round(duration, 3)}
 
 
 def make_mp3(src, job_id):
@@ -183,16 +222,24 @@ def handle(job):
         ext = os.path.splitext(job["audio"].get("name") or "")[1] or ".audio"
         path = os.path.join(tmp, "input" + ext)
         download(job["audio"]["url"], path)
-        if (job.get("options") or {}).get("needsMp3"):
-            progress.set("mp3")
-            make_mp3(path, job_id)
-        if job["type"] != "transcribe":
-            raise RuntimeError(f"job type {job['type']} is not supported yet")
-        result = transcribe(job, path, progress)
+        if job["type"] == "transcribe":
+            if (job.get("options") or {}).get("needsMp3"):
+                progress.set("mp3")
+                make_mp3(path, job_id)
+            result = transcribe(job, path, progress)
+            summary = f"{len(result['words'])} words"
+        elif job["type"] == "analyze":
+            result = analyze(job, path, progress)
+            summary = f"{len(result['gaps'])} pauses measured"
+        elif job["type"] == "autocut":
+            result = autocut(job, path, progress, tmp)
+            summary = f"{len(result['cuts'])} cuts, new length {result['duration']:.1f} s"
+        else:
+            raise RuntimeError(f"job type {job['type']} is not supported")
         progress.set("sending")
         result["info"] = INFO
         call("POST", f"/api/worker/jobs/{job_id}/result", result, timeout=300)
-        log(f"Job {job_id} done: {len(result['words'])} words.")
+        log(f"Job {job_id} done: {summary}.")
     except Exception as e:
         traceback.print_exc()
         try:
@@ -210,7 +257,7 @@ def main():
     log(f"Hallraum worker starting: {APP_URL}, model {MODEL}, speaker detection {'on' if HF_TOKEN else 'off'}")
     while True:
         try:
-            r = call("POST", "/api/worker/next", {"types": ["transcribe"], "info": INFO})
+            r = call("POST", "/api/worker/next", {"types": JOB_TYPES, "info": INFO})
             job = r.get("job")
             if job:
                 log(f"New job {job['id']} (episode {job['episodeId']})")
