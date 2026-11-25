@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { settingsFromLevel } from './autocut.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -20,7 +21,19 @@ export function openDb(file = process.env.DB_FILE || path.join(DATA_DIR, 'app.sq
 function migrate(db) {
   const cols = (t) => db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
   if (!cols('users').includes('locale')) db.exec('ALTER TABLE users ADD COLUMN locale TEXT');
-  db.exec(`UPDATE podcasts SET autocut_default = CASE autocut_default WHEN 'aus' THEN 'off' WHEN 'sanft' THEN 'soft' WHEN 'mittel' THEN 'medium' WHEN 'stark' THEN 'strong' ELSE autocut_default END`);
+  // Auto-cut: the single level (off / soft / medium / strong) became three separate settings stored as JSON
+  for (const [table, oldCol] of [['podcasts', 'autocut_default'], ['episodes', 'autocut_level']]) {
+    if (!cols(table).includes('autocut_settings')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN autocut_settings TEXT${table === 'podcasts' ? " NOT NULL DEFAULT '{}'" : ''}`);
+    }
+    if (cols(table).includes(oldCol)) {
+      for (const row of db.prepare(`SELECT id, ${oldCol} AS level FROM ${table} WHERE ${oldCol} IS NOT NULL`).all()) {
+        const s = settingsFromLevel(row.level);
+        if (s) db.prepare(`UPDATE ${table} SET autocut_settings = ? WHERE id = ?`).run(JSON.stringify(s), row.id);
+      }
+      db.exec(`ALTER TABLE ${table} DROP COLUMN ${oldCol}`);
+    }
+  }
 }
 
 // Thin helper layer: db.get / db.all / db.run / db.tx

@@ -19,11 +19,9 @@ const EPISODE_LABELS = { title: 'field.title', description: 'field.description',
 
 const PODCAST_LABELS = { name: 'field.name', slug: 'field.slug', subtitle: 'field.subtitle', description: 'field.description', author: 'field.author',
   owner_email: 'field.ownerEmail', language: 'field.language', category: 'field.category', explicit: 'field.explicit', theme: 'field.theme',
-  content_warning_options: 'field.warningOptions', autocut_default: 'field.autocut' };
+  content_warning_options: 'field.warningOptions' };
 
-const AUTOCUT_LEVELS = ['off', 'soft', 'medium', 'strong'];
-
-// Settings for planned features (guest preview, auto-cut) stay hidden until those features exist
+// Settings for planned features (guest preview) stay hidden until those features exist
 const SHOW_PLANNED = false;
 
 export default function adminRoutes(db) {
@@ -471,7 +469,6 @@ export default function adminRoutes(db) {
         <label>${t('settings.pattern')} <select name="pattern">${['none', 'moire', 'lightpainting'].map((v) => html`<option value="${v}" ${theme.pattern === v ? raw('selected') : ''}>${t('pattern.' + v)}</option>`)}</select></label>
       </div><p class="muted">${t('settings.contrastHint')}</p></fieldset>
       <label>${t('settings.warningOptions')} <textarea name="content_warning_options" rows="4">${JSON.parse(p.content_warning_options || '[]').join('\n')}</textarea></label>
-      ${SHOW_PLANNED ? html`<label>${t('settings.autocutDefault')} <select name="autocut_default">${AUTOCUT_LEVELS.map((l) => html`<option value="${l}" ${p.autocut_default === l ? raw('selected') : ''}>${t('autocut.' + l)}</option>`)}</select></label>` : ''}
       <button class="primary">${isNew ? t('podcast.create') : t('common.save')}</button></form>`;
   };
 
@@ -483,7 +480,6 @@ export default function adminRoutes(db) {
       owner_email: (b.owner_email || '').trim(), language: LANGUAGES[b.language] ? b.language : 'en', category: (b.category || '').trim(), explicit: b.explicit ? 1 : 0,
       theme: JSON.stringify({ accent: b.accent, bg: b.bg, fg: b.fg, pattern: b.pattern }),
       content_warning_options: JSON.stringify(String(b.content_warning_options || '').split('\n').map((s) => s.trim()).filter(Boolean)),
-      autocut_default: AUTOCUT_LEVELS.includes(b.autocut_default) ? b.autocut_default : current?.autocut_default || 'off',
     };
   };
 
@@ -510,8 +506,8 @@ export default function adminRoutes(db) {
     if (db.get('SELECT 1 FROM podcasts WHERE slug = ? AND id != ?', next.slug, p.id)) throw httpError(400, 'err.slugTaken');
     db.tx(() => {
       logFieldChanges(db, { ...ctx(req), type: 'podcast', id: p.id }, p, next, PODCAST_LABELS);
-      db.run(`UPDATE podcasts SET name=?, slug=?, subtitle=?, description=?, author=?, owner_email=?, language=?, category=?, explicit=?, theme=?, content_warning_options=?, autocut_default=? WHERE id=?`,
-        next.name, next.slug, next.subtitle, next.description, next.author, next.owner_email, next.language, next.category, next.explicit, next.theme, next.content_warning_options, next.autocut_default, p.id);
+      db.run(`UPDATE podcasts SET name=?, slug=?, subtitle=?, description=?, author=?, owner_email=?, language=?, category=?, explicit=?, theme=?, content_warning_options=? WHERE id=?`,
+        next.name, next.slug, next.subtitle, next.description, next.author, next.owner_email, next.language, next.category, next.explicit, next.theme, next.content_warning_options, p.id);
     });
     res.redirect('/admin/settings?m=saved');
   });
@@ -538,8 +534,8 @@ export default function adminRoutes(db) {
     if (!p.name) throw httpError(400, 'err.nameMissing');
     if (db.get('SELECT 1 FROM podcasts WHERE slug = ?', p.slug)) throw httpError(400, 'err.slugTaken');
     const id = db.tx(() => {
-      const rr = db.run(`INSERT INTO podcasts (name, slug, subtitle, description, author, owner_email, language, category, explicit, theme, content_warning_options, autocut_default)
-                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`, p.name, p.slug, p.subtitle, p.description, p.author, p.owner_email, p.language, p.category, p.explicit, p.theme, p.content_warning_options, p.autocut_default);
+      const rr = db.run(`INSERT INTO podcasts (name, slug, subtitle, description, author, owner_email, language, category, explicit, theme, content_warning_options)
+                         VALUES (?,?,?,?,?,?,?,?,?,?,?)`, p.name, p.slug, p.subtitle, p.description, p.author, p.owner_email, p.language, p.category, p.explicit, p.theme, p.content_warning_options);
       const pid = Number(rr.lastInsertRowid);
       db.run('INSERT INTO memberships (user_id, podcast_id, role) VALUES (?,?,?)', req.user.id, pid, 'admin');
       db.run('INSERT INTO seasons (podcast_id, number) VALUES (?, 1)', pid);

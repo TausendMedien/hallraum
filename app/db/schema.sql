@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS podcasts (
   cover_path TEXT,
   theme TEXT NOT NULL DEFAULT '{}',           -- JSON: colours, pattern
   content_warning_options TEXT NOT NULL DEFAULT '[]', -- JSON list of preset content warnings
-  autocut_default TEXT NOT NULL DEFAULT 'off', -- planned auto-cut module: off | soft | medium | strong
+  autocut_settings TEXT NOT NULL DEFAULT '{}', -- JSON: auto-cut settings, see lib/autocut.js ('{}' = all off)
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS episodes (
   consent_note TEXT NOT NULL DEFAULT '',
   guest_share_enabled INTEGER NOT NULL DEFAULT 0,
   speaker_names TEXT NOT NULL DEFAULT '{}',   -- JSON: {"SPEAKER_00":"Anna"}
-  autocut_level TEXT,                          -- NULL = podcast default
+  autocut_settings TEXT,                       -- JSON: auto-cut overrides; NULL = podcast settings
   publish_at TEXT,
   published_at TEXT,
   version INTEGER NOT NULL DEFAULT 1,
@@ -180,7 +180,7 @@ CREATE TABLE IF NOT EXISTS changes (
 );
 CREATE INDEX IF NOT EXISTS changes_episode ON changes(episode_id, at);
 
--- Jobs for the transcription worker. type: transcribe | autocut (planned)
+-- Jobs for the transcription worker. type: transcribe | analyze, autocut (planned, see docs/auto-cut-plan.md)
 CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY,
   episode_id INTEGER NOT NULL REFERENCES episodes(id) ON DELETE CASCADE,

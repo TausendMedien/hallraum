@@ -18,7 +18,7 @@ export const LANGUAGES = {
   },
 };
 
-const normWord = (w) => String(w).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+export const normWord = (w) => String(w).toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 
 export function languageData(lang) {
   return LANGUAGES[lang] || LANGUAGES[String(lang || '').slice(0, 2)] || LANGUAGES.en;

@@ -203,17 +203,12 @@ export default {
   'settings.pattern': 'Pattern',
   'settings.contrastHint': 'Please keep enough contrast between text and background (accessibility).',
   'settings.warningOptions': 'Preset content warnings (one per line)',
-  'settings.autocutDefault': 'Auto-cut default (module coming later)',
   'settings.adminsOnly': 'Only admins of this podcast can change the settings.',
   'settings.coverHeading': 'Podcast cover',
   'settings.coverHint': 'Image (square, 1400–3000 px)',
   'pattern.none': 'none',
   'pattern.moire': 'Moiré',
   'pattern.lightpainting': 'Light painting',
-  'autocut.off': 'off',
-  'autocut.soft': 'soft',
-  'autocut.medium': 'medium',
-  'autocut.strong': 'strong',
 
   // Team
   'team.title': 'Team: {podcast}',
