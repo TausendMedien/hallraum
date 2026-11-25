@@ -52,5 +52,12 @@ export function createApp(db = openDb()) {
 // Started directly (locally, in Docker or via Passenger)
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) || process.env.PASSENGER_APP_ENV) {
   const port = Number(process.env.PORT || 3000);
-  createApp().listen(port, () => console.log(`Hallraum is running on http://localhost:${port}`));
+  // Express 5 passes listen errors (e.g. port already in use) to this callback instead of throwing
+  createApp().listen(port, (err) => {
+    if (err) {
+      console.error(`Hallraum could not start on port ${port}: ${err.code === 'EADDRINUSE' ? 'the port is already in use. Set another one with PORT=… in .env' : err.message}`);
+      process.exit(1);
+    }
+    console.log(`Hallraum is running on http://localhost:${port}`);
+  });
 }
